@@ -17,6 +17,8 @@ const ResetPasswordView = () => import("@/views/ResetPasswordView.vue");
 const BarcodePrintView = () => import("@/views/BarcodePrintView.vue");
 const SetupWizardView = () => import("@/views/SetupWizardView.vue");
 const RolePermissionsView = () => import("@/views/RolePermissionsView.vue");
+const BranchInvoiceApprovalView = () => import("@/views/BranchInvoiceApprovalView.vue");
+const CategoryMergeView = () => import("@/views/CategoryMergeView.vue");
 import { RouteRecordRaw } from "vue-router";
 
 const routes: RouteRecordRaw[] = [
@@ -107,6 +109,18 @@ const routes: RouteRecordRaw[] = [
 		name: "stock-receiving",
 		component: StockReceivingView,
 		meta: { title: "Stock Receiving", requiresAuth: true },
+	},
+	{
+		path: "/branch-invoice-approval",
+		name: "branch-invoice-approval",
+		component: BranchInvoiceApprovalView,
+		meta: { title: "Branch Invoice Approval", requiresAuth: true },
+	},
+	{
+		path: "/category-merge",
+		name: "category-merge",
+		component: CategoryMergeView,
+		meta: { title: "Category Merge", requiresAuth: true },
 	},
 	{
 		path: "/settings",

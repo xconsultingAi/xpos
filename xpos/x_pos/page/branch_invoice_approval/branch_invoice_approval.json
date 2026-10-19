@@ -1,0 +1,35 @@
+{
+ "content": null,
+ "creation": "2026-10-19 12:00:00.000000",
+ "docstatus": 0,
+ "doctype": "Page",
+ "idx": 0,
+ "modified": "2026-10-19 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "X POS",
+ "name": "branch-invoice-approval",
+ "owner": "Administrator",
+ "page_name": "branch-invoice-approval",
+ "roles": [
+  {
+   "role": "System Manager"
+  },
+  {
+   "role": "Franchise Owner"
+  },
+  {
+   "role": "Accounts Manager"
+  },
+  {
+   "role": "Accounts User"
+  },
+  {
+   "role": "Sales Manager"
+  }
+ ],
+ "script": null,
+ "standard": "Yes",
+ "style": null,
+ "system_page": 0,
+ "title": "Branch Invoice Approval"
+}

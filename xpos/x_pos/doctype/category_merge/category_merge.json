@@ -1,0 +1,137 @@
+{
+ "actions": [],
+ "creation": "2026-10-19 20:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "company",
+  "warehouse",
+  "posting_date",
+  "column_break_cmt",
+  "item_category",
+  "target_item",
+  "target_item_name",
+  "get_items",
+  "items_section",
+  "items",
+  "total_qty",
+  "total_amount",
+  "stock_entry"
+ ],
+ "fields": [
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company",
+   "reqd": 1
+  },
+  {
+   "description": "Stock is taken out of and put back into this warehouse",
+   "fieldname": "warehouse",
+   "fieldtype": "Link",
+   "label": "Warehouse",
+   "options": "Warehouse",
+   "reqd": 1
+  },
+  {
+   "default": "Today",
+   "fieldname": "posting_date",
+   "fieldtype": "Date",
+   "label": "Posting Date",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_cmt",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "item_category",
+   "fieldtype": "Link",
+   "label": "Item Category",
+   "options": "Item Category"
+  },
+  {
+   "description": "All the items below are merged into this item",
+   "fieldname": "target_item",
+   "fieldtype": "Link",
+   "label": "Target Item",
+   "options": "Item",
+   "reqd": 1
+  },
+  {
+   "fetch_from": "target_item.item_name",
+   "fieldname": "target_item_name",
+   "fieldtype": "Data",
+   "label": "Target Item Name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "get_items",
+   "fieldtype": "Button",
+   "label": "Get Items"
+  },
+  {
+   "fieldname": "items_section",
+   "fieldtype": "Section Break",
+   "label": "Items to Merge"
+  },
+  {
+   "fieldname": "items",
+   "fieldtype": "Table",
+   "label": "Items",
+   "options": "Category Merge Item"
+  },
+  {
+   "fieldname": "total_qty",
+   "fieldtype": "Float",
+   "label": "Total Qty",
+   "read_only": 1
+  },
+  {
+   "fieldname": "total_amount",
+   "fieldtype": "Currency",
+   "label": "Total Amount",
+   "read_only": 1
+  },
+  {
+   "description": "Repack entry made by the last merge",
+   "fieldname": "stock_entry",
+   "fieldtype": "Link",
+   "label": "Last Stock Entry",
+   "options": "Stock Entry",
+   "read_only": 1
+  }
+ ],
+ "hide_toolbar": 1,
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-10-19 20:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "X POS",
+ "name": "Category Merge",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "read": 1,
+   "role": "System Manager",
+   "write": 1
+  },
+  {
+   "create": 1,
+   "read": 1,
+   "role": "Stock Manager",
+   "write": 1
+  },
+  {
+   "create": 1,
+   "read": 1,
+   "role": "Stock User",
+   "write": 1
+  }
+ ],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}

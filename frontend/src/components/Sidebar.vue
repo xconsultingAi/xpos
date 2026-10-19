@@ -149,6 +149,8 @@ import {
 	BarChart3,
 	Banknote,
 	ScanBarcode,
+	CheckCheck,
+	Combine,
 } from "lucide-vue-next";
 
 import { useBranding } from "@/composables/useBranding";
@@ -189,6 +191,8 @@ const purchaseNavItems = [
 	{ route: "/purchase-order", label: __("Purchase Order"), icon: ClipboardList },
 	{ route: "/purchase-invoices", label: __("Purchase Invoice"), icon: Receipt },
 	{ route: "/stock-receiving", label: __("Stock Receiving"), icon: PackageCheck },
+	{ route: "/branch-invoice-approval", label: __("Branch Invoice Approval"), icon: CheckCheck },
+	{ route: "/category-merge", label: __("Category Merge"), icon: Combine },
 ];
 
 const toolsNavItems = [
