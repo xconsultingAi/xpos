@@ -9,9 +9,14 @@
   "posting_date",
   "column_break_cmt",
   "item_category",
+  "item_category_name",
   "target_item",
   "target_item_name",
   "get_items",
+  "purchase_invoice_section",
+  "purchase_invoice",
+  "column_break_pi",
+  "get_items_from_purchase_invoice",
   "items_section",
   "items",
   "total_qty",
@@ -24,15 +29,16 @@
    "fieldtype": "Link",
    "label": "Company",
    "options": "Company",
-   "reqd": 1
+   "read_only": 1,
+   "description": "Always Dollar Junction"
   },
   {
-   "description": "Stock is taken out of and put back into this warehouse",
+   "description": "Your branch warehouse. Stock is taken from and merged back into it.",
    "fieldname": "warehouse",
    "fieldtype": "Link",
    "label": "Warehouse",
    "options": "Warehouse",
-   "reqd": 1
+   "read_only": 1
   },
   {
    "default": "Today",
@@ -52,12 +58,18 @@
    "options": "Item Category"
   },
   {
-   "description": "All the items below are merged into this item",
+   "fetch_from": "item_category.category_name",
+   "fieldname": "item_category_name",
+   "fieldtype": "Data",
+   "label": "Item Category Name",
+   "read_only": 1
+  },
+  {
+   "description": "Merge (top) puts all rows into this item. A row's own Merge button uses its Item Category's item.",
    "fieldname": "target_item",
    "fieldtype": "Link",
    "label": "Target Item",
-   "options": "Item",
-   "reqd": 1
+   "options": "Item"
   },
   {
    "fetch_from": "target_item.item_name",
@@ -70,6 +82,28 @@
    "fieldname": "get_items",
    "fieldtype": "Button",
    "label": "Get Items"
+  },
+  {
+   "collapsible": 0,
+   "fieldname": "purchase_invoice_section",
+   "fieldtype": "Section Break",
+   "label": "Purchase Invoice"
+  },
+  {
+   "description": "Load the items of a submitted Purchase Invoice to merge",
+   "fieldname": "purchase_invoice",
+   "fieldtype": "Link",
+   "label": "Purchase Invoice",
+   "options": "Purchase Invoice"
+  },
+  {
+   "fieldname": "column_break_pi",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "get_items_from_purchase_invoice",
+   "fieldtype": "Button",
+   "label": "Get Items from Purchase Invoice"
   },
   {
    "fieldname": "items_section",
@@ -106,7 +140,7 @@
  "hide_toolbar": 1,
  "issingle": 1,
  "links": [],
- "modified": "2026-10-19 20:00:00.000000",
+ "modified": "2026-10-20 02:00:00.000000",
  "modified_by": "Administrator",
  "module": "X POS",
  "name": "Category Merge",
