@@ -36,6 +36,8 @@ const props = withDefaults(
 		referenceDoctype?: string;
 		ignoreUserPermissions?: boolean;
 		labelField?: string;
+		/** Link mode: show "<code> - <this field>" in the input and the dropdown. */
+		nameField?: string;
 		openOnFocus?: boolean;
 		compact?: boolean;
 		tableNavigation?: boolean;
@@ -181,8 +183,23 @@ watch(open, (isOpen) => {
 	highlightedIndex.value = -1;
 });
 
+function codeWithName(value: string, name: unknown): string {
+	const text = name == null ? "" : String(name).trim();
+	return text && text !== value ? `${value} - ${text}` : value;
+}
+
 async function resolveLinkLabel(value: string) {
 	if (!props.doctype) return;
+	if (props.nameField) {
+		try {
+			const row = await getValue<Record<string, unknown>>(props.doctype, value, [props.nameField]);
+			// ignore a reply for a value that has since changed
+			if (props.modelValue === value) resolvedLabel.value = codeWithName(value, row?.[props.nameField]);
+		} catch {
+			resolvedLabel.value = value;
+		}
+		return;
+	}
 	try {
 		const response = await getValue<Record<string, unknown>>(props.doctype, value, [props.labelField!]);
 		const maybeMessage = response as { message?: Record<string, unknown> };
@@ -216,6 +233,26 @@ function normalizeLinkResponse(rows: unknown[]): AutocompleteOption[] {
 		.filter((r): r is AutocompleteOption => !!r);
 }
 
+// show each option's name (nameField) under its code
+async function withNames(options: AutocompleteOption[]): Promise<AutocompleteOption[]> {
+	if (!props.nameField || !props.doctype || !options.length) return options;
+	try {
+		const rows = await call<Record<string, unknown>[]>("frappe.client.get_list", {
+			doctype: props.doctype,
+			fields: ["name", props.nameField],
+			filters: [["name", "in", options.map((o) => o.value)]],
+			limit_page_length: options.length,
+		});
+		const names = new Map((rows ?? []).map((r) => [String(r.name), r[props.nameField!]]));
+		return options.map((o) => {
+			const name = names.get(o.value);
+			return name ? { ...o, description: String(name) } : o;
+		});
+	} catch {
+		return options;
+	}
+}
+
 async function searchLink(text: string) {
 	if (!props.doctype) return;
 	const trimmed = (text ?? "").trim();
@@ -235,7 +272,7 @@ async function searchLink(text: string) {
 			reference_doctype: props.referenceDoctype,
 			ignore_user_permissions: props.ignoreUserPermissions,
 		});
-		linkOptions.value = normalizeLinkResponse(response ?? []);
+		linkOptions.value = await withNames(normalizeLinkResponse(response ?? []));
 	} catch {
 		linkOptions.value = [];
 	} finally {
@@ -261,7 +298,10 @@ function onInput() {
 function selectOption(option: AutocompleteOption) {
 	if (option.disabled) return;
 
-	if (isLinkMode.value) {
+	if (isLinkMode.value && props.nameField) {
+		resolvedLabel.value = option.description ? codeWithName(option.value, option.description) : option.value;
+		query.value = resolvedLabel.value;
+	} else if (isLinkMode.value) {
 		resolvedLabel.value = option.description ?? option.label ?? option.value;
 		query.value = resolvedLabel.value;
 	} else {

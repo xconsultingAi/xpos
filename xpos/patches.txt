@@ -17,3 +17,4 @@ xpos.patches.v2.activate_pos_profile_settings
 xpos.patches.v2.add_view_expected_amount_permission
 xpos.patches.v2.referral_code_unique_customer_company
 xpos.patches.v2.add_resolve_fiscal_check_permission
+xpos.patches.v2.mark_category_merged_purchase_invoices

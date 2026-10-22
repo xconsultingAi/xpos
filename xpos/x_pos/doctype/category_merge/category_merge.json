@@ -30,7 +30,7 @@
    "label": "Company",
    "options": "Company",
    "read_only": 1,
-   "description": "Always Dollar Junction"
+   "description": "Your company"
   },
   {
    "description": "Your branch warehouse. Stock is taken from and merged back into it.",

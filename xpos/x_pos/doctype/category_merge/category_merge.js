@@ -6,7 +6,8 @@ frappe.ui.form.on("Category Merge", {
 		frm.set_query("purchase_invoice", () => ({
 			filters: {
 				docstatus: 1,
-				...(frm.warehouse_company ? { company: frm.warehouse_company } : {}),
+				category_merged: 0,
+				company: frm.doc.company || "__none__",
 			},
 		}));
 		frm.set_query("target_item", () => ({
@@ -14,7 +15,7 @@ frappe.ui.form.on("Category Merge", {
 		}));
 	},
 
-	// Dollar Junction and the user's branch warehouse, every time the tool opens
+	// The user's company and branch warehouse, every time the tool opens
 	onload(frm) {
 		frappe
 			.call("xpos.x_pos.doctype.category_merge.category_merge.get_defaults")
@@ -46,11 +47,24 @@ frappe.ui.form.on("Category Merge", {
 
 	// Each Item Category has an Item of the same code standing for the whole category,
 	// which is the natural item to merge into.
+	// Picking a category also loads its items into the table.
 	item_category(frm) {
-		if (!frm.doc.item_category) return;
-		frappe.db.exists("Item", frm.doc.item_category).then((exists) => {
-			if (exists) frm.set_value("target_item", frm.doc.item_category);
-		});
+		const category = frm.doc.item_category;
+		if (!category) {
+			frm.clear_table("items");
+			frm.refresh_fields();
+			return;
+		}
+		frappe.db
+			.exists("Item", category)
+			.then((exists) => exists && frm.set_value("target_item", category))
+			.then(() => {
+				// skip a stale reply if the category changed meanwhile
+				if (frm.doc.item_category !== category || !frm.doc.warehouse) return;
+				return frm
+					.call({ doc: frm.doc, method: "get_items", freeze: true })
+					.then(() => frm.refresh_fields());
+			});
 	},
 
 	get_items_from_purchase_invoice(frm) {

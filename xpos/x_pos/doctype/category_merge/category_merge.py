@@ -7,7 +7,31 @@ from frappe.model.document import Document
 from frappe.utils import flt, get_link_to_form
 
 
-DEFAULT_COMPANY = "Dollar Junction"
+CATEGORY_ITEM_GROUP = "Category"
+
+
+def create_category_item(category):
+	"""Create the Item that stands for a whole Item Category (same code), set up like the
+	existing ones (e.g. 900100): stock item in the Category group, in Nos. A merge needs
+	it as the Repack target, and the merging branch user may not be allowed to add Items."""
+	category_name = frappe.db.get_value("Item Category", category, "category_name") or category
+	item = frappe.get_doc(
+		{
+			"doctype": "Item",
+			"item_code": category,
+			"item_name": category_name,
+			"item_group": CATEGORY_ITEM_GROUP
+			if frappe.db.exists("Item Group", CATEGORY_ITEM_GROUP)
+			else frappe.db.get_single_value("Stock Settings", "item_group"),
+			"stock_uom": "Nos",
+			"is_stock_item": 1,
+			"include_item_in_manufacturing": 1,
+			"item_category": category,
+		}
+	)
+	item.flags.ignore_permissions = True
+	item.insert()
+	return item.name
 
 
 def get_user_branch(user=None):
@@ -27,22 +51,36 @@ def get_user_branch(user=None):
 	return None
 
 
+def get_user_company(user=None):
+	"""The user's company: their branch warehouse's company, else their POS Profile's,
+	else their default company."""
+	user = user or frappe.session.user
+	branch = get_user_branch(user)
+	company = branch and frappe.db.get_value("Warehouse", branch, "company")
+	if not company:
+		profile = frappe.db.get_value("POS Profile User", {"user": user, "parenttype": "POS Profile"}, "parent")
+		company = profile and frappe.db.get_value("POS Profile", profile, "company")
+	if not company:
+		from erpnext import get_default_company
+
+		company = get_default_company(user)
+	return company
+
+
 class CategoryMerge(Document):
 	"""Merge the stock of items, usually one Item Category, into target items with Repack
 	Stock Entries. Each row has its own warehouse and target item; the target item is put
 	back into the row's warehouse."""
 
 	def validate(self):
-		# Company and Warehouse are read-only: Dollar Junction and the user's branch. They
-		# are set here so a request cannot point the tool at another branch. A branch may
-		# sit in the franchise company, so each Repack is posted in the warehouse's own
-		# company.
+		# Company and Warehouse are read-only: the user's company and branch. They are set
+		# here so a request cannot point the tool at another company or branch. Each
+		# Repack is posted in its warehouse's own company.
 		self.set_fixed_header()
 		self.set_totals()
 
 	def set_fixed_header(self):
-		if frappe.db.exists("Company", DEFAULT_COMPANY):
-			self.company = DEFAULT_COMPANY
+		self.company = get_user_company()
 		branch = get_user_branch()
 		if branch:
 			self.warehouse = branch
@@ -66,12 +104,14 @@ class CategoryMerge(Document):
 
 		bin = frappe.qb.DocType("Bin")
 		item = frappe.qb.DocType("Item")
+		# with a category, list every item of it (as the Item list does), showing 0 where
+		# the warehouse holds none; without one, only the items in stock there
 		query = (
-			frappe.qb.from_(bin)
-			.join(item)
-			.on(item.name == bin.item_code)
+			frappe.qb.from_(item)
+			.left_join(bin)
+			.on((bin.item_code == item.name) & (bin.warehouse == self.warehouse))
 			.select(
-				bin.item_code,
+				item.name.as_("item_code"),
 				item.item_name,
 				item.stock_uom,
 				item.item_category,
@@ -79,10 +119,9 @@ class CategoryMerge(Document):
 				bin.valuation_rate,
 			)
 			.where(
-				(bin.warehouse == self.warehouse)
-				& (bin.actual_qty > 0)
-				& (item.disabled == 0)
+				(item.disabled == 0)
 				& (item.is_stock_item == 1)
+				& (item.has_variants == 0)
 				& (item.has_batch_no == 0)
 				& (item.has_serial_no == 0)
 			)
@@ -90,11 +129,15 @@ class CategoryMerge(Document):
 		)
 		if self.item_category:
 			query = query.where(item.item_category == self.item_category)
+		else:
+			query = query.where(bin.actual_qty > 0)
 		if self.target_item:
-			query = query.where(bin.item_code != self.target_item)
+			query = query.where(item.name != self.target_item)
 
 		self.set("items", [])
 		for row in query.run(as_dict=True):
+			if flt(row.actual_qty) < 0:
+				row.actual_qty = 0
 			self.append(
 				"items",
 				{
@@ -112,36 +155,56 @@ class CategoryMerge(Document):
 		self.set_totals()
 
 		if not self.items:
-			frappe.msgprint(_("No items with stock found in {0}.").format(frappe.bold(self.warehouse)))
+			if self.item_category:
+				frappe.msgprint(_("No items found in Item Category {0}.").format(frappe.bold(self.item_category)))
+			else:
+				frappe.msgprint(_("No items with stock found in {0}.").format(frappe.bold(self.warehouse)))
 
-	@frappe.whitelist()
-	def get_items_from_purchase_invoice(self):
-		"""Load the stock items of a submitted Purchase Invoice, one row per item at the qty
-		invoiced (summed in stock UOM). The header Warehouse becomes the invoice's warehouse,
-		and every row merges there. When an Item Category is set, only that category's
-		items are taken."""
-		if not self.purchase_invoice:
-			frappe.throw(_("Select a Purchase Invoice first."))
-
+	def invoice_lines(self):
+		"""The loaded Purchase Invoice's item lines, each with the warehouse its stock came
+		into: the line's own warehouse, else the invoice's, else the header Warehouse."""
 		pi = frappe.db.get_value(
 			"Purchase Invoice", self.purchase_invoice, ["docstatus", "company", "set_warehouse"], as_dict=True
 		)
 		if not pi or pi.docstatus != 1:
 			frappe.throw(_("Purchase Invoice {0} is not submitted.").format(frappe.bold(self.purchase_invoice)))
-
+		if self.company and pi.company != self.company:
+			frappe.throw(
+				_("Purchase Invoice {0} belongs to {1}, not your company {2}.").format(
+					frappe.bold(self.purchase_invoice), frappe.bold(pi.company), frappe.bold(self.company)
+				)
+			)
 		lines = frappe.get_all(
 			"Purchase Invoice Item",
 			filters={"parent": self.purchase_invoice, "parenttype": "Purchase Invoice"},
 			fields=["item_code", "item_name", "stock_uom", "stock_qty", "warehouse"],
 			order_by="idx asc",
 		)
+		for line in lines:
+			line.warehouse = line.warehouse or pi.set_warehouse or self.warehouse
+		return lines
+
+	@frappe.whitelist()
+	def get_items_from_purchase_invoice(self):
+		"""Load the stock items of a submitted Purchase Invoice, one row per item and
+		warehouse at the qty invoiced (summed in stock UOM). Each row merges in the
+		warehouse the invoice line put its stock into. When an Item Category is set, only
+		that category's items are taken."""
+		if not self.purchase_invoice:
+			frappe.throw(_("Select a Purchase Invoice first."))
+
 		self.set_fixed_header()
-		self.warehouse = self.warehouse or pi.set_warehouse or next((d.warehouse for d in lines if d.warehouse), None)
+		lines = self.invoice_lines()
 		if not self.warehouse:
+			self.warehouse = next((d.warehouse for d in lines if d.warehouse), None)
+		if not any(d.warehouse for d in lines):
 			frappe.throw(_("Set the Warehouse first."))
 
+		already_merged = merged_items(self.purchase_invoice)
 		qty_by_item = {}
 		for line in lines:
+			if line.item_code in already_merged:
+				continue
 			item = frappe.get_cached_value(
 				"Item",
 				line.item_code,
@@ -155,7 +218,7 @@ class CategoryMerge(Document):
 			if line.item_code == self.target_item:
 				continue
 			row = qty_by_item.setdefault(
-				line.item_code,
+				(line.item_code, line.warehouse),
 				{
 					**line,
 					"stock_qty": 0,
@@ -166,14 +229,13 @@ class CategoryMerge(Document):
 
 		sales_invoice = self.source_sales_invoice()
 		self.set("items", [])
-		for item_code, line in qty_by_item.items():
+		for (item_code, warehouse), line in qty_by_item.items():
 			bin_row = frappe.db.get_value(
 				"Bin",
-				{"item_code": item_code, "warehouse": self.warehouse},
+				{"item_code": item_code, "warehouse": warehouse},
 				["actual_qty", "valuation_rate"],
 				as_dict=True,
 			) or frappe._dict()
-			available = flt(bin_row.actual_qty)
 			self.append(
 				"items",
 				{
@@ -182,8 +244,8 @@ class CategoryMerge(Document):
 					"item_name": line["item_name"],
 					"uom": line["stock_uom"],
 					"item_category": line["item_category"],
-					"warehouse": self.warehouse,
-					"available_qty": available,
+					"warehouse": warehouse,
+					"available_qty": flt(bin_row.actual_qty),
 					"invoice_qty": flt(line["stock_qty"]),
 					"qty": flt(line["stock_qty"]),
 					"valuation_rate": flt(bin_row.valuation_rate),
@@ -193,7 +255,14 @@ class CategoryMerge(Document):
 		self.set_totals()
 
 		if not self.items:
-			frappe.msgprint(_("No stock items to merge on Purchase Invoice {0}.").format(frappe.bold(self.purchase_invoice)))
+			if already_merged:
+				frappe.msgprint(
+					_("Purchase Invoice {0} is already fully merged.").format(frappe.bold(self.purchase_invoice))
+				)
+			else:
+				frappe.msgprint(
+					_("No stock items to merge on Purchase Invoice {0}.").format(frappe.bold(self.purchase_invoice))
+				)
 
 	def source_sales_invoice(self):
 		"""The Sales Invoice the loaded Purchase Invoice was raised from: dollarj's
@@ -210,9 +279,13 @@ class CategoryMerge(Document):
 		return None
 
 	def default_target(self, row):
-		"""The Item that shares the row's Item Category code, else the tool's Target Item."""
-		if row.item_category and frappe.db.exists("Item", row.item_category):
-			return row.item_category
+		"""The Item that shares the row's Item Category code (created on merge when it does
+		not exist yet), else the tool's Target Item for a row with no category."""
+		category = row.item_category
+		if category and (
+			frappe.db.exists("Item", category) or frappe.db.exists("Item Category", category)
+		):
+			return category
 		return self.target_item
 
 	def set_row_targets(self):
@@ -220,7 +293,19 @@ class CategoryMerge(Document):
 			row.target_item = self.default_target(row)
 
 	def row_warehouse(self, row):
-		"""Every row merges in the header Warehouse."""
+		"""A Purchase Invoice row merges in the warehouse its invoice line put the stock
+		into (checked against the invoice, not taken from the client); any other row
+		merges in the header Warehouse."""
+		if self.purchase_invoice:
+			allowed = [d.warehouse for d in self.invoice_lines() if d.item_code == row.item_code and d.warehouse]
+			if not allowed:
+				frappe.throw(
+					_("Row #{0}: {1} is not on Purchase Invoice {2}.").format(
+						row.idx, frappe.bold(row.item_code), frappe.bold(self.purchase_invoice)
+					)
+				)
+			row.warehouse = row.warehouse if row.warehouse in allowed else allowed[0]
+			return row.warehouse
 		if not self.warehouse:
 			frappe.throw(_("Set the Warehouse first."))
 		row.warehouse = self.warehouse
@@ -236,6 +321,8 @@ class CategoryMerge(Document):
 					row.idx, frappe.bold(row.item_code)
 				)
 			)
+		if target == row.item_category and not frappe.db.exists("Item", target):
+			create_category_item(target)
 		return target
 
 	@frappe.whitelist()
@@ -268,17 +355,11 @@ class CategoryMerge(Document):
 		"""Qty is read-only on screen, so it is set here rather than trusted from the
 		client: the qty invoiced when a Purchase Invoice is loaded, else the warehouse stock."""
 		if self.purchase_invoice:
+			warehouse = self.row_warehouse(row)
 			return sum(
-				flt(qty)
-				for qty in frappe.get_all(
-					"Purchase Invoice Item",
-					filters={
-						"parent": self.purchase_invoice,
-						"parenttype": "Purchase Invoice",
-						"item_code": row.item_code,
-					},
-					pluck="stock_qty",
-				)
+				flt(d.stock_qty)
+				for d in self.invoice_lines()
+				if d.item_code == row.item_code and d.warehouse == warehouse
 			)
 		return flt(
 			frappe.db.get_value(
@@ -305,7 +386,14 @@ class CategoryMerge(Document):
 				)
 			)
 
+		already_merged = merged_items(self.purchase_invoice) if self.purchase_invoice else set()
 		for row in rows:
+			if row.item_code in already_merged:
+				frappe.throw(
+					_("Row #{0}: {1} of Purchase Invoice {2} is already merged.").format(
+						row.idx, frappe.bold(row.item_code), frappe.bold(self.purchase_invoice)
+					)
+				)
 			if row.item_code == target_item:
 				frappe.throw(
 					_("Row #{0}: {1} is the Target Item and cannot be merged into itself.").format(
@@ -333,6 +421,7 @@ class CategoryMerge(Document):
 				"set_posting_time": 1,
 				"remarks": _("Category Merge into {0}").format(target_item)
 				+ (" " + _("from Purchase Invoice {0}").format(self.purchase_invoice) if self.purchase_invoice else ""),
+				"category_merge_purchase_invoice": self.purchase_invoice,
 			}
 		)
 		for row in rows:
@@ -357,8 +446,13 @@ class CategoryMerge(Document):
 				"is_finished_item": 1,
 			},
 		)
+		# dollarj blocks Repack Stock Entries for non-Stock-Manager users (so branch users
+		# cannot open or edit them); this tool is the controlled way for them to make one
+		se.flags.ignore_permissions = True
 		se.insert()
 		se.submit()
+		if self.purchase_invoice:
+			update_purchase_invoice_merged(self.purchase_invoice)
 
 		merged = {row.name for row in rows}
 		self.stock_entry = se.name
@@ -381,12 +475,77 @@ class CategoryMerge(Document):
 		return se.name
 
 
+def merged_items(purchase_invoice):
+	"""Items of the Purchase Invoice already merged: the source rows of its submitted
+	Category Merge Repacks."""
+	if not purchase_invoice:
+		return set()
+	se = frappe.qb.DocType("Stock Entry")
+	sed = frappe.qb.DocType("Stock Entry Detail")
+	rows = (
+		frappe.qb.from_(sed)
+		.join(se)
+		.on(sed.parent == se.name)
+		.select(sed.item_code)
+		.distinct()
+		.where(
+			(se.category_merge_purchase_invoice == purchase_invoice)
+			& (se.docstatus == 1)
+			& (sed.s_warehouse.isnotnull())
+			& (sed.s_warehouse != "")
+		)
+		.run(pluck=True)
+	)
+	return set(rows)
+
+
+def mergeable_items(purchase_invoice):
+	"""Items of the Purchase Invoice the tool can merge: stock items without batch or
+	serial numbers that are not themselves a category's item."""
+	codes = set(
+		frappe.get_all(
+			"Purchase Invoice Item",
+			filters={"parent": purchase_invoice, "parenttype": "Purchase Invoice"},
+			pluck="item_code",
+		)
+	)
+	result = set()
+	for code in codes:
+		item = frappe.get_cached_value(
+			"Item", code, ["is_stock_item", "has_batch_no", "has_serial_no"], as_dict=True
+		)
+		if not item or not item.is_stock_item or item.has_batch_no or item.has_serial_no:
+			continue
+		if frappe.db.exists("Item Category", code):
+			continue
+		result.add(code)
+	return result
+
+
+def update_purchase_invoice_merged(purchase_invoice):
+	"""Mark the Purchase Invoice merged once every mergeable item on it is merged, so the
+	Category Merge picker stops offering it; unmark it when a merge is cancelled."""
+	if not purchase_invoice or not frappe.db.exists("Purchase Invoice", purchase_invoice):
+		return
+	merged = merged_items(purchase_invoice)
+	fully = bool(merged) and mergeable_items(purchase_invoice) <= merged
+	frappe.db.set_value(
+		"Purchase Invoice", purchase_invoice, "category_merged", int(fully), update_modified=False
+	)
+
+
+def on_stock_entry_cancel(doc, method=None):
+	"""A cancelled Category Merge Repack puts its items, and the invoice, back up for merging."""
+	if doc.get("category_merge_purchase_invoice"):
+		update_purchase_invoice_merged(doc.category_merge_purchase_invoice)
+
+
 @frappe.whitelist()
 def get_defaults():
 	"""Company and branch warehouse the Category Merge screens open with."""
 	warehouse = get_user_branch()
 	return {
-		"company": DEFAULT_COMPANY if frappe.db.exists("Company", DEFAULT_COMPANY) else None,
+		"company": get_user_company(),
 		"warehouse": warehouse,
 		"warehouse_company": frappe.db.get_value("Warehouse", warehouse, "company") if warehouse else None,
 	}
@@ -460,6 +619,8 @@ def merge_items(
 	"""For the X POS Category Merge screen: submit one Repack per row Target Item and
 	return their names."""
 	frappe.has_permission("Category Merge", "write", throw=True)
+	if purchase_invoice:
+		frappe.has_permission("Purchase Invoice", "read", doc=purchase_invoice, throw=True)
 	tool = _tool(company, warehouse, target_item, item_category, posting_date, purchase_invoice)
 	for row in frappe.parse_json(items) or []:
 		tool.append(
@@ -484,6 +645,8 @@ def merge_items(
 def merge_row(company, row, warehouse=None, target_item=None, posting_date=None, purchase_invoice=None):
 	"""For the X POS Category Merge screen: merge one row into its category's item."""
 	frappe.has_permission("Category Merge", "write", throw=True)
+	if purchase_invoice:
+		frappe.has_permission("Purchase Invoice", "read", doc=purchase_invoice, throw=True)
 	row = frappe.parse_json(row) or {}
 	tool = _tool(company, warehouse, target_item, posting_date=posting_date, purchase_invoice=purchase_invoice)
 	child = tool.append(

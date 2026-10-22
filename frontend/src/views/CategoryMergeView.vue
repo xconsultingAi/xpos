@@ -35,7 +35,7 @@ const warehouseCompany = ref("");
 const itemCategoryName = ref("");
 const targetItemName = ref("");
 
-// Dollar Junction and the user's branch warehouse, every time the screen opens
+// The user's company and branch warehouse, every time the screen opens
 onMounted(async () => {
 	try {
 		const d = await call<{ company?: string; warehouse?: string; warehouse_company?: string }>(
@@ -89,6 +89,16 @@ const canMerge = computed(
 		mergeRows.value.every((row) => !!rowTarget(row)),
 );
 const mergingRow = ref("");
+const rowKey = (row: MergeRow) => `${row.item_code}::${row.warehouse || ""}`;
+// The row warehouse's stock; when it holds none, the qty the invoice brought in.
+const rowStock = (row: MergeRow) =>
+	Number(row.available_qty) > 0 || row.invoice_qty == null
+		? Number(row.available_qty) || 0
+		: Number(row.invoice_qty);
+const isStockIn = (row: MergeRow) => !(Number(row.available_qty) > 0) && row.invoice_qty != null;
+const rowWarehouses = computed(() =>
+	[...new Set(rows.value.map((r) => r.warehouse).filter(Boolean))].join(", "),
+);
 
 // Each Item Category has an Item of the same code standing for the whole category,
 // which is the natural item to merge into.
@@ -101,29 +111,42 @@ watch(itemCategory, async (category) => {
 	} catch {
 		/* leave the target as it is */
 	}
+	// picking a category loads its items straight away
+	if (itemCategory.value === category && company.value && warehouse.value) await getItems();
 });
+
+let loadSeq = 0;
 
 async function getItems(): Promise<void> {
 	if (!company.value || !warehouse.value) {
 		showError(__("Set the Company and Warehouse first."));
 		return;
 	}
+	const seq = ++loadSeq;
 	isLoading.value = true;
 	purchaseInvoice.value = "";
 	salesInvoiceNo.value = "";
 	try {
-		rows.value =
+		const result =
 			(await call<MergeRow[]>(`${METHOD}.get_merge_items`, {
 				company: company.value,
 				warehouse: warehouse.value,
 				item_category: itemCategory.value || null,
 				target_item: targetItem.value || null,
 			})) || [];
-		if (!rows.value.length) showError(__("No items with stock found in {0}.", [warehouse.value]));
+		// a newer load (e.g. another category picked) has taken over
+		if (seq !== loadSeq) return;
+		rows.value = result;
+		if (!rows.value.length)
+			showError(
+				itemCategory.value
+					? __("No items found in Item Category {0}.", [itemCategory.value])
+					: __("No items with stock found in {0}.", [warehouse.value]),
+			);
 	} catch (e) {
-		showError((e as Error)?.message || __("Could not load items"));
+		if (seq === loadSeq) showError((e as Error)?.message || __("Could not load items"));
 	} finally {
-		isLoading.value = false;
+		if (seq === loadSeq) isLoading.value = false;
 	}
 }
 
@@ -146,7 +169,7 @@ async function getItemsFromPurchaseInvoice(): Promise<void> {
 				company: company.value || null,
 				warehouse: warehouse.value || null,
 				item_category: itemCategory.value || null,
-				target_item: targetItem.value || null,
+				target_item: itemCategory.value || null,
 			},
 		);
 		company.value = data?.company || company.value;
@@ -170,7 +193,7 @@ async function mergeRow(index: number): Promise<void> {
 		showError(__("Set a Qty to merge {0}.", [row.item_code]));
 		return;
 	}
-	mergingRow.value = row.item_code;
+	mergingRow.value = rowKey(row);
 	try {
 		const result = await call<{ stock_entry: string; target_item: string; warehouse: string }>(
 			`${METHOD}.merge_row`,
@@ -275,12 +298,10 @@ async function merge(): Promise<void> {
 					<Autocomplete
 						v-model="itemCategory"
 						doctype="Item Category"
+						name-field="category_name"
 						:placeholder="__('Item Category')"
 						class="h-8 text-sm"
 					/>
-					<p v-if="itemCategoryName" class="text-xs text-muted-foreground mt-1 truncate">
-						{{ itemCategoryName }}
-					</p>
 				</div>
 				<div>
 					<label class="text-xs text-muted-foreground">{{ __("Target Item") }}</label>
@@ -288,12 +309,10 @@ async function merge(): Promise<void> {
 						v-model="targetItem"
 						doctype="Item"
 						:filters="{ is_stock_item: 1, disabled: 0, has_variants: 0 }"
+						name-field="item_name"
 						:placeholder="__('Target Item')"
 						class="h-8 text-sm"
 					/>
-					<p v-if="targetItemName" class="text-xs text-muted-foreground mt-1 truncate">
-						{{ targetItemName }}
-					</p>
 				</div>
 				<div class="sm:col-span-2 lg:col-span-4 flex justify-end">
 					<Button size="sm" variant="outline" :disabled="isLoading" @click="getItems">
@@ -318,7 +337,8 @@ async function merge(): Promise<void> {
 							doctype="Purchase Invoice"
 							:filters="{
 								docstatus: 1,
-								...(warehouseCompany ? { company: warehouseCompany } : {}),
+								category_merged: 0,
+								company: company || '__none__',
 							}"
 							:placeholder="__('Purchase Invoice')"
 							class="h-8 text-sm"
@@ -358,7 +378,7 @@ async function merge(): Promise<void> {
 					</span>
 					<span>
 						<span class="text-xs text-muted-foreground">{{ __("Warehouse Name") }}:</span>
-						<span class="font-semibold ms-1">{{ warehouse || "-" }}</span>
+						<span class="font-semibold ms-1">{{ rowWarehouses || warehouse || "-" }}</span>
 					</span>
 				</div>
 				<table class="w-full text-sm">
@@ -370,6 +390,8 @@ async function merge(): Promise<void> {
 							<th class="text-start px-3 py-2">{{ __("UOM") }}</th>
 							<th class="text-start px-3 py-2">{{ __("Item Category") }}</th>
 							<th class="text-start px-3 py-2">{{ __("Category Merge Item") }}</th>
+							<th class="text-start px-3 py-2">{{ __("Warehouse") }}</th>
+							<th class="text-end px-3 py-2">{{ __("Stock") }}</th>
 							<th class="text-end px-3 py-2">{{ __("Invoice Qty") }}</th>
 							<th class="text-end px-3 py-2 w-28">{{ __("Qty") }}</th>
 							<th class="text-end px-3 py-2">{{ __("Valuation Rate") }}</th>
@@ -378,13 +400,25 @@ async function merge(): Promise<void> {
 						</tr>
 					</thead>
 					<tbody>
-						<tr v-for="(row, i) in rows" :key="row.item_code" class="border-t border-border">
+						<tr v-for="(row, i) in rows" :key="rowKey(row)" class="border-t border-border">
 							<td class="px-3 py-1.5">{{ row.sales_invoice || "-" }}</td>
 							<td class="px-3 py-1.5">{{ row.item_code }}</td>
 							<td class="px-3 py-1.5">{{ row.item_name }}</td>
 							<td class="px-3 py-1.5">{{ row.uom }}</td>
 							<td class="px-3 py-1.5">{{ row.item_category || "-" }}</td>
 							<td class="px-3 py-1.5 font-semibold">{{ rowTarget(row) || "-" }}</td>
+							<td class="px-3 py-1.5 whitespace-nowrap">{{ row.warehouse || "-" }}</td>
+							<td
+								class="px-3 py-1.5 text-end tabular-nums"
+								:title="
+									isStockIn(row)
+										? __('No stock in {0}; showing the qty this invoice brought in', [row.warehouse || '-'])
+										: __('Stock in {0}', [row.warehouse || '-'])
+								"
+							>
+								{{ rowStock(row) }}
+								<span v-if="isStockIn(row)" class="text-xs text-muted-foreground ms-1">{{ __("(in)") }}</span>
+							</td>
 							<td class="px-3 py-1.5 text-end tabular-nums">
 								{{ row.invoice_qty ?? "-" }}
 							</td>
@@ -398,12 +432,12 @@ async function merge(): Promise<void> {
 									size="sm"
 									variant="outline"
 									class="h-7 px-2 me-1"
-									:disabled="!!mergingRow || isMerging"
+									:disabled="!!mergingRow || isMerging || !(Number(row.qty) > 0)"
 									:title="__('Merge into {0}', [rowTarget(row) || '-'])"
 									@click="mergeRow(i)"
 								>
 									<Combine class="w-3.5 h-3.5" />
-									{{ mergingRow === row.item_code ? __("Merging...") : __("Merge") }}
+									{{ mergingRow === rowKey(row) ? __("Merging...") : __("Merge") }}
 								</Button>
 								<Button variant="ghost" size="icon" class="h-7 w-7" @click="removeRow(i)">
 									<Trash2 class="w-4 h-4 text-destructive" />
@@ -413,7 +447,7 @@ async function merge(): Promise<void> {
 					</tbody>
 					<tfoot>
 						<tr class="border-t-2 border-border font-bold">
-							<td colspan="7" class="px-3 py-2 text-end">
+							<td colspan="9" class="px-3 py-2 text-end">
 								{{ __("Total") }} → {{ mergeTargets.join(", ") || "-" }}
 							</td>
 							<td class="px-3 py-2 text-end tabular-nums">{{ totalQty }}</td>

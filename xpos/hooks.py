@@ -190,6 +190,9 @@ doc_events = {
 	"POS Profile": {
 		"validate": "xpos.api.print_formats.validate_print_format_rules",
 	},
+	"Stock Entry": {
+		"on_cancel": "xpos.x_pos.doctype.category_merge.category_merge.on_stock_entry_cancel",
+	},
 }
 
 # Scheduled Tasks

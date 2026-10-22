@@ -120,22 +120,50 @@ def approve_invoices(invoices):
 			continue
 		try:
 			doc = frappe.get_doc("Sales Invoice", name)
-			if not doc.get("franchise_warehouse"):
-				# saved before the customer became a franchise branch: a save re-fetches
-				# franchise_warehouse/franchise_user, which the workflow condition needs
-				doc.save()
 			if not has_workflow:
+				_refresh_franchise_fields(doc)
 				doc.submit()
 			else:
-				# apply_workflow reloads the doc, so the second call sees the new state
 				if doc.get("workflow_state") != STATE_PENDING:
-					apply_workflow(doc, ACTION_SEND)
+					_send_to_franchise(doc)
+				# apply_workflow reloads the doc, so it sees the Pending state
 				apply_workflow(doc, ACTION_RECEIVE)
 			frappe.db.commit()
 			submitted.append(name)
 		except Exception as e:
 			frappe.db.rollback()
+			error = _error_text(e)
 			frappe.clear_messages()
-			failed.append({"name": name, "error": strip_html(str(e))})
+			failed.append({"name": name, "error": error})
 
 	return {"submitted": submitted, "failed": failed}
+
+
+def _refresh_franchise_fields(doc):
+	"""An invoice saved before its customer became a franchise branch has no
+	franchise_warehouse/franchise_user; a save re-fetches them for the workflow condition."""
+	if not doc.get("franchise_warehouse") or not doc.get("franchise_user"):
+		doc.flags.ignore_permissions = True
+		doc.save()
+
+
+def _send_to_franchise(doc):
+	"""Move a Draft to Pending Franchise Receipt. dollarj hides Draft invoices from
+	franchise owners, so this step runs as Administrator; the caller has already checked
+	the invoice belongs to the user's branch. Receive then runs as the user."""
+	user = frappe.session.user
+	frappe.set_user("Administrator")
+	try:
+		_refresh_franchise_fields(doc)
+		apply_workflow(doc, ACTION_SEND)
+	finally:
+		frappe.set_user(user)
+
+
+def _error_text(e):
+	"""str() of a bare frappe.PermissionError is empty; fall back to the last message."""
+	text = strip_html(str(e)).strip()
+	if not text:
+		messages = [frappe.parse_json(m).get("message") for m in (frappe.message_log or [])]
+		text = strip_html(next((m for m in reversed(messages) if m), "")).strip()
+	return text or e.__class__.__name__

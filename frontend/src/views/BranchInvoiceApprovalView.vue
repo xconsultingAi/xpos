@@ -5,8 +5,8 @@ import { call, showError, showSuccess } from "@/services/api";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { CheckCheck, RefreshCw, Building2, FileCheck2 } from "lucide-vue-next";
-import ConfirmDialog from "@/components/dialogs/ConfirmDialog.vue";
 import __ from "@/lib/translate";
 
 const METHOD = "xpos.x_pos.page.branch_invoice_approval.branch_invoice_approval";
@@ -41,11 +41,31 @@ const branches = ref<string[]>([]);
 const invoices = ref<ApprovalInvoice[]>([]);
 const isLoading = ref(false);
 const isApproving = ref(false);
-const showConfirm = ref(false);
 const failures = ref<ApproveResult["failed"]>([]);
+const selected = ref<string[]>([]);
 
 const invoiceTotal = (inv: ApprovalInvoice) => inv.items.reduce((sum, it) => sum + (it.amount || 0), 0);
 const grandTotal = computed(() => invoices.value.reduce((sum, inv) => sum + invoiceTotal(inv), 0));
+
+const isSelected = (name: string) => selected.value.includes(name);
+const allSelected = computed(
+	() => invoices.value.length > 0 && selected.value.length === invoices.value.length,
+);
+const someSelected = computed(() => selected.value.length > 0 && !allSelected.value);
+const selectedTotal = computed(() =>
+	invoices.value.filter((inv) => isSelected(inv.name)).reduce((sum, inv) => sum + invoiceTotal(inv), 0),
+);
+
+function toggleInvoice(name: string, checked?: boolean | "indeterminate"): void {
+	const on = checked === undefined ? !isSelected(name) : checked === true;
+	selected.value = on
+		? [...new Set([...selected.value, name])]
+		: selected.value.filter((n) => n !== name);
+}
+
+function toggleAll(checked: boolean | "indeterminate"): void {
+	selected.value = checked === true ? invoices.value.map((inv) => inv.name) : [];
+}
 
 async function load(): Promise<void> {
 	isLoading.value = true;
@@ -55,6 +75,9 @@ async function load(): Promise<void> {
 		);
 		branches.value = data?.branches || [];
 		invoices.value = data?.invoices || [];
+		// keep only the ticks of invoices still waiting for approval
+		const names = new Set(invoices.value.map((inv) => inv.name));
+		selected.value = selected.value.filter((n) => names.has(n));
 	} catch (e) {
 		showError((e as Error)?.message || __("Could not load draft invoices"));
 	} finally {
@@ -63,12 +86,12 @@ async function load(): Promise<void> {
 }
 
 async function approve(): Promise<void> {
-	showConfirm.value = false;
+	if (!selected.value.length || isApproving.value) return;
 	isApproving.value = true;
 	failures.value = [];
 	try {
 		const result = await call<ApproveResult>(`${METHOD}.approve_invoices`, {
-			invoices: invoices.value.map((inv) => inv.name),
+			invoices: [...selected.value],
 		});
 		const submitted = result?.submitted || [];
 		failures.value = result?.failed || [];
@@ -107,17 +130,28 @@ onMounted(load);
 					</Badge>
 				</p>
 			</div>
+			<label
+				v-if="invoices.length"
+				class="flex items-center gap-2 text-sm text-foreground cursor-pointer select-none"
+			>
+				<Checkbox
+					:checked="allSelected ? true : someSelected ? 'indeterminate' : false"
+					:indeterminate="someSelected"
+					@update:checked="toggleAll"
+				/>
+				{{ __("Select all") }}
+			</label>
 			<Button size="sm" variant="outline" :disabled="isLoading" @click="load">
 				<RefreshCw class="w-4 h-4" :class="{ 'animate-spin': isLoading }" />
 				{{ __("Refresh") }}
 			</Button>
 			<Button
 				size="sm"
-				:disabled="!invoices.length || isApproving || isLoading"
-				@click="showConfirm = true"
+				:disabled="!selected.length || isApproving || isLoading"
+				@click="approve"
 			>
 				<CheckCheck class="w-4 h-4" />
-				{{ isApproving ? __("Approving...") : __("Approve") }}
+				{{ isApproving ? __("Approving...") : __("Approve ({0})", [selected.length]) }}
 			</Button>
 		</div>
 
@@ -157,9 +191,19 @@ onMounted(load);
 					</thead>
 					<tbody>
 						<template v-for="inv in invoices" :key="inv.name">
-							<tr class="border-t-2 border-border bg-primary/10">
+							<tr
+								class="border-t-2 border-border cursor-pointer"
+								:class="isSelected(inv.name) ? 'bg-primary/20' : 'bg-primary/10'"
+								@click="toggleInvoice(inv.name)"
+							>
 								<td colspan="6" class="px-3 py-2">
 									<div class="flex flex-wrap items-center gap-x-6 gap-y-1">
+										<Checkbox
+											:checked="isSelected(inv.name)"
+											:aria-label="__('Select {0}', [inv.name])"
+											@click.stop
+											@update:checked="(v: boolean | 'indeterminate') => toggleInvoice(inv.name, v)"
+										/>
 										<span>
 											<span class="text-xs text-muted-foreground">{{ __("Master Invoice No") }}:</span>
 											<span class="font-semibold ms-1">{{ inv.name }}</span>
@@ -198,7 +242,13 @@ onMounted(load);
 						</template>
 					</tbody>
 					<tfoot>
-						<tr class="border-t-2 border-border font-bold">
+						<tr class="border-t-2 border-border font-semibold text-primary">
+							<td colspan="5" class="px-3 py-2 text-end">
+								{{ __("Selected Total ({0})", [selected.length]) }}
+							</td>
+							<td class="px-3 py-2 text-end tabular-nums">{{ money(selectedTotal) }}</td>
+						</tr>
+						<tr class="border-t border-border font-bold">
 							<td colspan="5" class="px-3 py-2 text-end">{{ __("Grand Total") }}</td>
 							<td class="px-3 py-2 text-end tabular-nums">{{ money(grandTotal) }}</td>
 						</tr>
@@ -206,19 +256,5 @@ onMounted(load);
 				</table>
 			</Card>
 		</div>
-
-		<ConfirmDialog
-			:open="showConfirm"
-			:title="__('Approve Invoices')"
-			:description="
-				__('Approve all {0} draft invoice(s) shown? They will be received and submitted.', [
-					invoices.length,
-				])
-			"
-			:confirm-label="__('Approve')"
-			:icon="CheckCheck"
-			@confirm="approve"
-			@cancel="showConfirm = false"
-		/>
 	</div>
 </template>
